@@ -21,7 +21,6 @@
 #define ARDUINO_RUNNING_CORE 1
 #endif
 
-
 //--------------------------------------------------------------------------------------------------
 // CONFIG FEATURE
 #define DEBUG_MODE 1
@@ -33,17 +32,16 @@
 SemaphoreHandle_t mutex_debug;
 #endif
 
-
 //--------------------------------------------------------------------------------------------------
 // define EEPROM
 #define EEPROM_SIZE 130 // total size
 #define EEPROM_MAX_PROFILE_LENGTH 15
-#define EEPROM_TOTAL_PROFILE_LOCATION 0  // total profile 
-                                         // 1-> 9: reserved
+#define EEPROM_TOTAL_PROFILE_LOCATION 0 // total profile \
+                                        // 1-> 9: reserved
 #define EEPROM_PROFILE_1 10
-#define EEPROM_PROFILE_2 EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH*2
-#define EEPROM_PROFILE_3 EEPROM_PROFILE_2 + EEPROM_MAX_PROFILE_LENGTH*2
-#define EEPROM_PROFILE_4 EEPROM_PROFILE_3 + EEPROM_MAX_PROFILE_LENGTH*2
+#define EEPROM_PROFILE_2 EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH * 2
+#define EEPROM_PROFILE_3 EEPROM_PROFILE_2 + EEPROM_MAX_PROFILE_LENGTH * 2
+#define EEPROM_PROFILE_4 EEPROM_PROFILE_3 + EEPROM_MAX_PROFILE_LENGTH * 2
 #if EEPROM_MODE
 SemaphoreHandle_t mutex_eeprom;
 #endif
@@ -64,7 +62,6 @@ typedef enum
     WIFI_READ_PROFILE,
     WIFI_WRITE_PROFILE
 } ble_mgs_t;
-
 volatile bool isBleConnected = false;
 
 //--------------------------------------------------------------------------------------------------
@@ -131,7 +128,7 @@ void setup()
 
     // Wifi setting
     debug("Start connect wifi to %s", wifi_network_str);
-    WiFi.onEvent(WiFiEvent);
+    WiFi.onEvent(WiFiEventCallback);
     WiFi.begin((const char *)wifi_network_str, (const char *)wifi_password_str);
 
     unsigned long startAttemptTime = millis();
@@ -153,7 +150,7 @@ void setup()
     xTaskCreatePinnedToCore(
         TaskBLE,   //
         "TaskBLE", // A name just for humans
-        10000,     // This stack size can be checked & adjusted by reading the Stack Highwater
+        7000,      // This stack size can be checked & adjusted by reading the Stack Highwater
         NULL,      //
         2,         // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
         NULL,
@@ -162,7 +159,7 @@ void setup()
     xTaskCreatePinnedToCore(
         keepWiFiAlive,
         "keepWiFiAlive", // Task name
-        5000,            // Stack size (bytes)
+        7000,            // Stack size (bytes)
         NULL,            // Parameter
         2,               // Task priority
         NULL,            // Task handle
@@ -210,24 +207,15 @@ void BLESerialCallBack(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
 
 //--------------------------------------------------------------------------------------------------
 /* Wifi callback */
-void WiFiEvent(WiFiEvent_t event)
+void WiFiEventCallback(WiFiEvent_t event)
 {
+    // https://github.com/espressif/arduino-esp32/blob/master/libraries/WiFi/src/WiFiGeneric.cpp
+    // Increased stack size of network event task to 7000
     debug("[WiFi-event] event: %d", event);
+    debug("WiFiEvent uxTaskGetStackHighWaterMark %d", uxTaskGetStackHighWaterMark(NULL));
     IPAddress ip;
     switch (event)
     {
-    case SYSTEM_EVENT_WIFI_READY:
-        debug("[WiFi-event] WiFi interface ready");
-        break;
-    case SYSTEM_EVENT_SCAN_DONE:
-        debug("[WiFi-event] Completed scan for access points");
-        break;
-    case SYSTEM_EVENT_STA_START:
-        debug("[WiFi-event] WiFi client started");
-        break;
-    case SYSTEM_EVENT_STA_STOP:
-        debug("[WiFi-event] WiFi clients stopped");
-        break;
     case SYSTEM_EVENT_STA_CONNECTED:
         debug("[WiFi-event] Connected to access point");
         isWifiConnected = true;
@@ -239,15 +227,6 @@ void WiFiEvent(WiFiEvent_t event)
     case SYSTEM_EVENT_STA_GOT_IP:
         ip = WiFi.localIP();
         debug("[WiFi-event] Obtained IP address: IP %d.%d.%d.%d ...", ip[0], ip[1], ip[2], ip[3]);
-        break;
-    case SYSTEM_EVENT_STA_LOST_IP:
-        debug("[WiFi-event] Lost IP address and IP address is reset to 0");
-        break;
-    case SYSTEM_EVENT_AP_START:
-        debug("[WiFi-event] WiFi access point started");
-        break;
-    case SYSTEM_EVENT_AP_STOP:
-        debug("[WiFi-event] WiFi access point  stopped");
         break;
     default:
         break;
@@ -294,7 +273,7 @@ void TaskBLE(void *pvParameters)
                 debug("BLE data received: %s", data);
                 ble_mode = parseBleMsg((const char *)data);
                 debug("TaskBLE BLE mode %d", (int)ble_mode);
-                ble_handle_mode(ble_mode, (const char *)data);
+                bleHandleMode(ble_mode, (const char *)data);
 
                 vTaskDelay(100 / portTICK_PERIOD_MS);
 
@@ -303,7 +282,7 @@ void TaskBLE(void *pvParameters)
             }
         }
         else
-            vTaskDelay(50 / portTICK_PERIOD_MS);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
 
         // max length
         if (i == (MAX_BLE_MSG_LENGTH - 2))
@@ -322,65 +301,21 @@ void keepWiFiAlive(void *pvParameters)
     (void)pvParameters;
     for (;;)
     {
+        debug("keepWiFiAlive uxTaskGetStackHighWaterMark %d", uxTaskGetStackHighWaterMark(NULL));
         if (WL_CONNECTED == WiFi.status())
         {
-            vTaskDelay(10000 / portTICK_PERIOD_MS);
+            vTaskDelay(20000 / portTICK_PERIOD_MS);
             continue;
         }
 
         debug("keepWiFiAlive Connecting ...");
-        debug("keepWiFiAlive uxTaskGetStackHighWaterMark %d", uxTaskGetStackHighWaterMark(NULL));
         // WiFi.mode(WIFI_STA);
         WiFi.begin(wifi_network_str, wifi_password_str);
         vTaskDelay(WIFI_RECOVER_TIME_MS / portTICK_PERIOD_MS);
-
-        // unsigned long startAttemptTime = millis();
-
-        // while (WL_CONNECTED != WiFi.status() && WIFI_TIMEOUT_MS > millis() - startAttemptTime)
-        //     ;
-
-        // if (WL_CONNECTED != WiFi.status())
-        // {
-        //     debug("keepWiFiAlive failed to connect to wifi ...");
-        //     vTaskDelay(WIFI_RECOVER_TIME_MS / portTICK_PERIOD_MS);
-        //     continue;
-        // }
-
-        // IPAddress ip = WiFi.localIP();
-        // debug("keepWiFiAlive Wifi connected IP %d.%d.%d.%d ...", ip[0], ip[1], ip[2], ip[3]);
     }
 }
 
 //--------------------------------------------------------------------------------------------------
-/* Get BLE string command from mode */
-// TODO: 1 Need to test this function                          - Pending
-//       2 Can We create an lookup table for these data        - Pending
-const char *getModeString(ble_mgs_t mode) {
-    char temp[MAX_BLE_MSG_LENGTH] = {0};
-    switch (mode)
-    {
-    case WIFI_INFO:
-        strncpy(temp, "wifi info", strlen("wifi info")+1);
-        break;
-    case WIFI_NETWORK:
-        strncpy(temp, "wifi ssid", strlen("wifi ssid")+1);
-        break;
-    case WIFI_PASSWORD:
-        strncpy(temp, "wifi password", strlen("wifi password")+1);
-        break;
-    case WIFI_DISCONNECT:
-        strncpy(temp, "wifi disconnect", strlen("wifi disconnect")+1);
-        break;
-    case WIFI_CONNECT:
-        strncpy(temp, "wifi connect", strlen("wifi connect")+1);
-        break;
-    case NONE:
-    default:
-        break;
-    }
-    return temp;
-}
-
 
 /* parse BLE classic message */
 ble_mgs_t parseBleMsg(const char *msg)
@@ -396,18 +331,20 @@ ble_mgs_t parseBleMsg(const char *msg)
 
     ble_mgs_t mode = NONE;
 
-    if (NULL != strstr(temp, getModeString(WIFI_INFO)))
+    if (NULL != strstr(temp, "wifi info"))
         mode = WIFI_INFO;
-    else if (NULL != strstr(temp, getModeString(WIFI_CONNECT)))
+    else if (NULL != strstr(temp, "wifi connect"))
         mode = WIFI_CONNECT;
-    else if (NULL != strstr(temp, getModeString(WIFI_DISCONNECT)))
+    else if (NULL != strstr(temp, "wifi disconnect"))
         mode = WIFI_DISCONNECT;
-
-    // TODO: update network and password
-    else if (NULL != strstr(temp, getModeString(WIFI_NETWORK)))
+    else if (NULL != strstr(temp, "wifi ssid"))
         mode = WIFI_NETWORK;
-    else if (NULL != strstr(temp, getModeString(WIFI_PASSWORD)))
+    else if (NULL != strstr(temp, "wifi password"))
         mode = WIFI_PASSWORD;
+    else if (NULL != strstr(temp, "wifi read"))
+        mode = WIFI_READ_PROFILE;
+    else if (NULL != strstr(temp, "wifi write"))
+        mode = WIFI_WRITE_PROFILE;
 
     else
     {
@@ -425,9 +362,13 @@ ble_mgs_t parseBleMsg(const char *msg)
 }
 
 //--------------------------------------------------------------------------------------------------
-/* ble_handle_mode */
-void ble_handle_mode(ble_mgs_t mode, const char *msg)
+/* bleHandleMode */
+void bleHandleMode(ble_mgs_t mode, const char *msg)
 {
+    int profile = 0;
+    char ssid[EEPROM_MAX_PROFILE_LENGTH] = {0};
+    char password[EEPROM_MAX_PROFILE_LENGTH] = {0};
+
     switch (mode)
     {
     case WIFI_INFO:
@@ -435,11 +376,45 @@ void ble_handle_mode(ble_mgs_t mode, const char *msg)
         break;
     case WIFI_NETWORK:
     case WIFI_PASSWORD:
+        break;
     case WIFI_DISCONNECT:
-        WiFi.disconnect();
+        if (isWifiConnected)
+            WiFi.disconnect();
+        else
+            SerialBT.write((const uint8_t *)"Wifi already disconnected\r", strlen("Wifi already disconnected\r") + 1);
         break;
     case WIFI_CONNECT:
-        WiFi.begin(wifi_network_str, wifi_password_str);
+        if (!isWifiConnected)
+            WiFi.begin(wifi_network_str, wifi_password_str);
+        else
+            SerialBT.write((const uint8_t *)"Wifi already connected\r", strlen("Wifi already connected\r") + 1);
+        break;
+    case WIFI_WRITE_PROFILE:
+        if (1 == sscanf(strstr(msg, "wifi"), "wifi write %d", &profile))
+        {
+            if (writeWifiProfile2Eeprom((const char *)wifi_network_str, (const char *)wifi_password_str, profile))
+                SerialBT.write((const uint8_t *)"Write complete\r", strlen("Write complete\r") + 1);
+            else
+                SerialBT.write((const uint8_t *)"Write failed\r", strlen("Write failed\r") + 1);
+        }
+        else
+            debug("cannot read profile");
+    case WIFI_READ_PROFILE:
+        if (1 == sscanf(strstr(msg, "wifi"), "wifi read %d", &profile))
+        {
+            if (readWifiProfileFromEeprom(ssid, password, profile))
+            {
+                SerialBT.write((const uint8_t *)"Read complete \r", strlen("Read complete \r") + 1);
+                SerialBT.write((const uint8_t *)ssid, strlen(ssid) + 1);
+                SerialBT.write((const uint8_t *)" \r", strlen(" \r") + 1);
+                SerialBT.write((const uint8_t *)password, strlen(password) + 1);
+                SerialBT.write((const uint8_t *)" \r", strlen(" \r") + 1);
+            }
+            else
+                SerialBT.write((const uint8_t *)"Read failed\r", strlen("Read failed\r") + 1);
+        }
+        else
+            debug("cannot read profile");
         break;
     default:
         break;
@@ -497,7 +472,6 @@ bool sendWifiInfoToBleClient(const char *msg)
     }
     else
     {
-        // snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (WL_CONNECTED == WiFi.status()) ? "Connected" : "Disconnected");
         snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (isWifiConnected) ? "Connected" : "Disconnected");
         SerialBT.write((const uint8_t *)rsp, strlen(rsp) + 1);
         snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "SSID %s\r", wifi_network_str);
@@ -538,8 +512,6 @@ static void sendWfiEvt2Ble(WiFiEvent_t event)
     }
 }
 
-
-
 //--------------------------------------------------------------------------------------------------
 // EEPROM
 /* EEPROM write string */
@@ -547,10 +519,12 @@ bool writeString2Eeprom(const char *data, int len, int address)
 {
 #ifdef EEPROM_MODE
     // length failed
-    if (EEPROM_MAX_PROFILE_LENGTH > len+1) return false;
+    if (EEPROM_MAX_PROFILE_LENGTH > len + 1)
+        return false;
 
     int i = 0;
-    for (i =0; i < len; i++) {
+    for (i = 0; i < len; i++)
+    {
         EEPROM.write(address + i, data[i]);
     }
     EEPROM.write(address + i, '\0');
@@ -573,15 +547,15 @@ bool writeWifiProfile2Eeprom(const char *ssid, const char *password, int profile
     //     debug("EEPROM: Failed to write password to profile %d", profile);
     //     return false;
     // }
-    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), ssid))
+    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + ((profile - 1) * 2 * EEPROM_MAX_PROFILE_LENGTH), ssid))
     {
         debug("EEPROM: Failed to write ssid to profile %d", profile);
-        return false;  
+        return false;
     }
-    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), password))
+    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile - 1) * 2 * EEPROM_MAX_PROFILE_LENGTH), password))
     {
         debug("EEPROM: Failed to write ssid to profile %d", profile);
-        return false;  
+        return false;
     }
     return true;
 #else
@@ -604,12 +578,12 @@ bool readWifiProfileFromEeprom(char *ssid, char *password, int profile)
     // return true;
     char *ssid_out = ssid;
     char *pwd_out = password;
-    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), ssid_out, EEPROM_MAX_PROFILE_LENGTH))
+    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + ((profile - 1) * 2 * EEPROM_MAX_PROFILE_LENGTH), ssid_out, EEPROM_MAX_PROFILE_LENGTH))
     {
         debug("EEPROM: Failed to read ssid from profile %d", profile);
         return false;
     }
-    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), pwd_out, EEPROM_MAX_PROFILE_LENGTH))
+    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile - 1) * 2 * EEPROM_MAX_PROFILE_LENGTH), pwd_out, EEPROM_MAX_PROFILE_LENGTH))
     {
         debug("EEPROM: Failed to read password from profile %d", profile);
         return false;
