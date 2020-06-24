@@ -9,6 +9,7 @@
 
 #include "BluetoothSerial.h"
 #include "WiFi.h"
+#include <EEPROM.h>
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
@@ -20,11 +21,31 @@
 #define ARDUINO_RUNNING_CORE 1
 #endif
 
+
+//--------------------------------------------------------------------------------------------------
+// CONFIG FEATURE
+#define DEBUG_MODE 1
+#define EEPROM_MODE 1
+
 //--------------------------------------------------------------------------------------------------
 // set debug mode
-#define DEBUG_MODE 1
 #if DEBUG_MODE
-SemaphoreHandle_t mutex_v;
+SemaphoreHandle_t mutex_debug;
+#endif
+
+
+//--------------------------------------------------------------------------------------------------
+// define EEPROM
+#define EEPROM_SIZE 130 // total size
+#define EEPROM_MAX_PROFILE_LENGTH 15
+#define EEPROM_TOTAL_PROFILE_LOCATION 0  // total profile 
+                                         // 1-> 9: reserved
+#define EEPROM_PROFILE_1 10
+#define EEPROM_PROFILE_2 EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH*2
+#define EEPROM_PROFILE_3 EEPROM_PROFILE_2 + EEPROM_MAX_PROFILE_LENGTH*2
+#define EEPROM_PROFILE_4 EEPROM_PROFILE_3 + EEPROM_MAX_PROFILE_LENGTH*2
+#if EEPROM_MODE
+SemaphoreHandle_t mutex_eeprom;
 #endif
 
 //--------------------------------------------------------------------------------------------------
@@ -39,8 +60,11 @@ typedef enum
     WIFI_CONNECT,
     WIFI_DISCONNECT,
     WIFI_NETWORK,
-    WIFI_PASSWORD
+    WIFI_PASSWORD,
+    WIFI_READ_PROFILE,
+    WIFI_WRITE_PROFILE
 } ble_mgs_t;
+
 volatile bool isBleConnected = false;
 
 //--------------------------------------------------------------------------------------------------
@@ -48,9 +72,10 @@ volatile bool isBleConnected = false;
 #define WIFI_PASSWORD_STR "12345678@X"
 #define WIFI_TIMEOUT_MS 20000
 #define WIFI_RECOVER_TIME_MS 30000
-#define MAX_WIFI_STRING 64
+#define MAX_WIFI_STRING 20
 char wifi_network_str[MAX_WIFI_STRING] = WIFI_NETWORK_STR;
 char wifi_password_str[MAX_WIFI_STRING] = WIFI_PASSWORD_STR;
+volatile bool isWifiConnected = false;
 
 //--------------------------------------------------------------------------------------------------
 int debug(const char *fmt, ...)
@@ -63,9 +88,9 @@ int debug(const char *fmt, ...)
     rc = vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
 
-    xSemaphoreTake(mutex_v, portMAX_DELAY);
+    xSemaphoreTake(mutex_debug, portMAX_DELAY);
     Serial.println(buffer);
-    xSemaphoreGive(mutex_v);
+    xSemaphoreGive(mutex_debug);
 #endif
     return rc;
 }
@@ -78,11 +103,18 @@ void keepWiFiAlive(void *pvParameters);
 //--------------------------------------------------------------------------------------------------
 void setup()
 {
+    vTaskDelay(200 / portTICK_PERIOD_MS);
     // initialize serial communication at 115200 bits per second:
     Serial.begin(115200);
 
 #if DEBUG_MODE
-    mutex_v = xSemaphoreCreateMutex();
+    mutex_debug = xSemaphoreCreateMutex();
+#endif
+
+#if EEPROM_MODE
+    // initialize EEPROM with predefined size
+    EEPROM.begin(EEPROM_SIZE);
+    mutex_eeprom = xSemaphoreCreateMutex();
 #endif
 
     // BLE setting
@@ -176,6 +208,7 @@ void BLESerialCallBack(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
     }
 }
 
+//--------------------------------------------------------------------------------------------------
 /* Wifi callback */
 void WiFiEvent(WiFiEvent_t event)
 {
@@ -197,9 +230,11 @@ void WiFiEvent(WiFiEvent_t event)
         break;
     case SYSTEM_EVENT_STA_CONNECTED:
         debug("[WiFi-event] Connected to access point");
+        isWifiConnected = true;
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
         debug("[WiFi-event] Disconnected from WiFi access point");
+        isWifiConnected = false;
         break;
     case SYSTEM_EVENT_STA_GOT_IP:
         ip = WiFi.localIP();
@@ -317,6 +352,35 @@ void keepWiFiAlive(void *pvParameters)
 }
 
 //--------------------------------------------------------------------------------------------------
+/* Get BLE string command from mode */
+// TODO: 1 Need to test this function                          - Pending
+//       2 Can We create an lookup table for these data        - Pending
+const char *getModeString(ble_mgs_t mode) {
+    char temp[MAX_BLE_MSG_LENGTH] = {0};
+    switch (mode)
+    {
+    case WIFI_INFO:
+        strncpy(temp, "wifi info", strlen("wifi info")+1);
+        break;
+    case WIFI_NETWORK:
+        strncpy(temp, "wifi ssid", strlen("wifi ssid")+1);
+        break;
+    case WIFI_PASSWORD:
+        strncpy(temp, "wifi password", strlen("wifi password")+1);
+        break;
+    case WIFI_DISCONNECT:
+        strncpy(temp, "wifi disconnect", strlen("wifi disconnect")+1);
+        break;
+    case WIFI_CONNECT:
+        strncpy(temp, "wifi connect", strlen("wifi connect")+1);
+        break;
+    case NONE:
+    default:
+        break;
+    }
+    return temp;
+}
+
 
 /* parse BLE classic message */
 ble_mgs_t parseBleMsg(const char *msg)
@@ -332,17 +396,17 @@ ble_mgs_t parseBleMsg(const char *msg)
 
     ble_mgs_t mode = NONE;
 
-    if (NULL != strstr(temp, "wifi info"))
+    if (NULL != strstr(temp, getModeString(WIFI_INFO)))
         mode = WIFI_INFO;
-    else if (NULL != strstr(temp, "wifi connect"))
+    else if (NULL != strstr(temp, getModeString(WIFI_CONNECT)))
         mode = WIFI_CONNECT;
-    else if (NULL != strstr(temp, "wifi disconnect"))
+    else if (NULL != strstr(temp, getModeString(WIFI_DISCONNECT)))
         mode = WIFI_DISCONNECT;
 
     // TODO: update network and password
-    else if (NULL != strstr(temp, "wifi network"))
+    else if (NULL != strstr(temp, getModeString(WIFI_NETWORK)))
         mode = WIFI_NETWORK;
-    else if (NULL != strstr(temp, "wifi password"))
+    else if (NULL != strstr(temp, getModeString(WIFI_PASSWORD)))
         mode = WIFI_PASSWORD;
 
     else
@@ -360,6 +424,7 @@ ble_mgs_t parseBleMsg(const char *msg)
     return mode;
 }
 
+//--------------------------------------------------------------------------------------------------
 /* ble_handle_mode */
 void ble_handle_mode(ble_mgs_t mode, const char *msg)
 {
@@ -381,6 +446,7 @@ void ble_handle_mode(ble_mgs_t mode, const char *msg)
     }
 }
 
+//--------------------------------------------------------------------------------------------------
 /* BLE Classic send Wifi information */
 bool sendWifiInfoToBleClient(const char *msg)
 {
@@ -408,7 +474,8 @@ bool sendWifiInfoToBleClient(const char *msg)
     {
         debug("Info request: %s", str_temp2);
         if (NULL != strstr(str_temp2, "status"))
-            snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (WL_CONNECTED == WiFi.status()) ? "Connected" : "Disconnected");
+            // snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (WL_CONNECTED == WiFi.status()) ? "Connected" : "Disconnected");
+            snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (isWifiConnected) ? "Connected" : "Disconnected");
         else if (NULL != strstr(str_temp2, "ssid"))
             snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "SSID %s\r", wifi_network_str);
         else if (NULL != strstr(str_temp2, "password"))
@@ -430,7 +497,8 @@ bool sendWifiInfoToBleClient(const char *msg)
     }
     else
     {
-        snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (WL_CONNECTED == WiFi.status()) ? "Connected" : "Disconnected");
+        // snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (WL_CONNECTED == WiFi.status()) ? "Connected" : "Disconnected");
+        snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "STATUS %s\r", (isWifiConnected) ? "Connected" : "Disconnected");
         SerialBT.write((const uint8_t *)rsp, strlen(rsp) + 1);
         snprintf(rsp, MAX_BLE_MSG_LENGTH - 1, "SSID %s\r", wifi_network_str);
         SerialBT.write((const uint8_t *)rsp, strlen(rsp) + 1);
@@ -450,6 +518,8 @@ bool sendWifiInfoToBleClient(const char *msg)
     free(str_temp2);
 }
 
+//--------------------------------------------------------------------------------------------------
+/* static. check and print wifi state to BLE connection */
 static void sendWfiEvt2Ble(WiFiEvent_t event)
 {
     if (isBleConnected)
@@ -466,4 +536,86 @@ static void sendWfiEvt2Ble(WiFiEvent_t event)
             break;
         }
     }
+}
+
+
+
+//--------------------------------------------------------------------------------------------------
+// EEPROM
+/* EEPROM write string */
+bool writeString2Eeprom(const char *data, int len, int address)
+{
+#ifdef EEPROM_MODE
+    // length failed
+    if (EEPROM_MAX_PROFILE_LENGTH > len+1) return false;
+
+    int i = 0;
+    for (i =0; i < len; i++) {
+        EEPROM.write(address + i, data[i]);
+    }
+    EEPROM.write(address + i, '\0');
+    EEPROM.commit();
+    return true;
+#else
+    return true;
+#endif
+}
+
+/* EEPROM write wifi profile */
+bool writeWifiProfile2Eeprom(const char *ssid, const char *password, int profile)
+{
+#ifdef EEPROM_MODE
+    // if (!writeString2Eeprom(ssid, strlen(ssid), EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH))) {
+    //     debug("EEPROM: Failed to write ssid to profile %d", profile);
+    //     return false;
+    // }
+    // if (!writeString2Eeprom(password, strlen(password), EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH))) {
+    //     debug("EEPROM: Failed to write password to profile %d", profile);
+    //     return false;
+    // }
+    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), ssid))
+    {
+        debug("EEPROM: Failed to write ssid to profile %d", profile);
+        return false;  
+    }
+    if (0 == EEPROM.writeString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), password))
+    {
+        debug("EEPROM: Failed to write ssid to profile %d", profile);
+        return false;  
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
+/* EEPROM read wifi profile */
+bool readWifiProfileFromEeprom(char *ssid, char *password, int profile)
+{
+#ifdef EEPROM_MODE
+    // if (!writeString2Eeprom(ssid, strlen(ssid), EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH))) {
+    //     debug("EEPROM: Failed to write ssid to profile %d", profile);
+    //     return false;
+    // }
+    // if (!writeString2Eeprom(password, strlen(password), EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH))) {
+    //     debug("EEPROM: Failed to write password to profile %d", profile);
+    //     return false;
+    // }
+    // return true;
+    char *ssid_out = ssid;
+    char *pwd_out = password;
+    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), ssid_out, EEPROM_MAX_PROFILE_LENGTH))
+    {
+        debug("EEPROM: Failed to read ssid from profile %d", profile);
+        return false;
+    }
+    if (0 == EEPROM.readString(EEPROM_PROFILE_1 + EEPROM_MAX_PROFILE_LENGTH + ((profile-1)*2*EEPROM_MAX_PROFILE_LENGTH), pwd_out, EEPROM_MAX_PROFILE_LENGTH))
+    {
+        debug("EEPROM: Failed to read password from profile %d", profile);
+        return false;
+    }
+    return true;
+#else
+    return true;
+#endif
 }
