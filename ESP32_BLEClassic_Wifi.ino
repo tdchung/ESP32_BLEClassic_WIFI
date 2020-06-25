@@ -5,6 +5,9 @@
  * date: 23/06/2020
  * version:
  * Update:
+ * 
+ * 
+ *  checkout this link: https://infocenter.nordicsemi.com/topic/com.nordic.infocenter.sdk5.v14.0.0/ble_sdk_app_nus_eval.html
  **/
 
 #include "BluetoothSerial.h"
